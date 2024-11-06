@@ -17,6 +17,15 @@ ALTER TABLE Persona
 
 -- En las tablas Comprobante y LineaComprobante; atributos: id_comp, id_tcomp, importe;
 -- Restriccion General ya que usa 2 tablas
+-- Declarativa:
+-- CREATE ASSERTION comprobante_coincide_linea
+-- CHECK ( NOT EXISTS ( SELECT 1
+-- FROM Comprobante c
+-- WHERE c.importe != (SELECT sum(l.importe)
+--                     FROM lineacomprobante l
+--                     WHERE c.id_comp = l.id_comp
+--                       AND c.id_tcomp = l.id_tcomp) ) )
+
 -- Al ser General no se puede implementar declarativamente en PostgreSQL, debemos implementarlo con Triggers.
 -- En la tabla Comprobante, controlamos al realizar Insert y Update de importe, con granularidad For Each Statement
 -- En la tabla LineaComprobante controlamos al realizar Insert, Update de importe y Delete, con granularidad For Each Statement
@@ -27,7 +36,7 @@ RETURNS TRIGGER AS $$
     BEGIN
         IF ( EXISTS (SELECT 1
                      FROM comprobante c
-                     WHERE c.importe != (SELECT sum(l.importe)
+                     WHERE c.importe != (SELECT sum(l.importe * l.cantidad)
                                          FROM lineacomprobante l
                                          WHERE c.id_comp = l.id_comp
                                            AND c.id_tcomp = l.id_tcomp)) ) THEN
@@ -56,6 +65,13 @@ CREATE OR REPLACE TRIGGER tr_importe_linea_comp
 
 -- En la tabla Equipo; atributos: IP, id_cliente;
 -- Restriccion de Tabla
+-- Declarativa:
+-- ALTER TABLE EQUIPO ADD CONSTRAINT ip_equipo
+-- CHECK (NOT EXISTS(SELECT 1
+--                  FROM EQUIPO E
+--                  GROUP BY E.ip
+--                  HAVING COUNT(E.id_cliente) > 1));
+
 -- Como es de tabla, no se puede implementar declarativamente en PostgreSQL, por lo tanto debemos implementarlo con Triggers.
 -- En Equipo controlamos al realizar Insert y Update de IP, con granularidad For Each Row
 
@@ -72,7 +88,7 @@ $$ LANGUAGE 'plpgsql';
 
 ---- TRIGGER EN EQUIPO ----
 CREATE OR REPLACE TRIGGER tr_equipo_insert_update
-   BEFORE UPDATE OF IP OR INSERT
+   BEFORE UPDATE OF IP, id_cliente OR INSERT
    ON Equipo
    FOR EACH ROW EXECUTE FUNCTION fn_equipo_insert_update();
 
@@ -99,19 +115,34 @@ LANGUAGE plpgsql
 AS $$
    BEGIN
        INSERT INTO comprobante (id_comp, id_tcomp, fecha, comentario, estado, fecha_vencimiento, id_turno, importe, id_cliente, id_lugar)
-       SELECT nextval('comprobanteSeq'),1,current_timestamp,'','pendiente',current_timestamp+ '15 days', 1,0,c.id_cliente,1
-           FROM cliente c
-               WHERE c.id_cliente in(SELECT p.id_persona FROM persona p WHERE p.activo = true) ;
+        SELECT nextval('comprobanteSeq'), 1, current_date, '', 'pendiente', current_date + 15, 1 , 0, c.id_cliente, 1
+        FROM cliente c
+        WHERE c.id_cliente IN (SELECT p.id_persona
+                               FROM persona p
+                               WHERE p.activo = true);
+
+/*
+        INSERT INTO lineacomprobante (nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
+        SELECT  nextval('lineaComprobanteSeq'), c.id_comp, 1, '', count(*), s.costo, s.id_servicio   /* no me gusta el asterisco */
+        FROM servicio s JOIN equipo e USING(id_servicio)
+                        JOIN comprobante c using(id_cliente)
+        WHERE c.fecha = current_date
+          AND s.periodico = true --Filtar los comprobantes del mes actual para no duplicar y que el servicio sea periodico
+        GROUP BY id_servicio, id_cliente, costo, id_comp;
+*/
+        INSERT INTO lineacomprobante (nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
+        SELECT ROW_NUMBER() OVER (PARTITION BY c.id_comp ORDER BY s.id_servicio) AS nro_linea, c.id_comp, 1, '', count(*), s.costo, s.id_servicio   /* no me gusta el asterisco */
+        FROM servicio s JOIN equipo e USING(id_servicio)
+                        JOIN comprobante c using(id_cliente)
+        WHERE c.fecha = current_date
+          AND s.periodico = true --Filtar los comprobantes del mes actual para no duplicar y que el servicio sea periodico
+        GROUP BY id_servicio, id_cliente, costo, id_comp;
 
 
-       INSERT INTO lineacomprobante (nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
-       SELECT  nextval('lineaComprobanteSeq'), id_comp, 1, '',1, s.costo,s.id_servicio
-           FROM servicio s JOIN equipo e using(id_servicio)
-           JOIN comprobante c using(id_cliente)
-           WHERE c.fecha = current_timestamp and s.periodico=true; --Filtar los comprobantes del mes actual para no duplicar y que el servicio sea periodico
-
-
-       UPDATE comprobante c set importe= COALESCE((SELECT SUM(importe) FROM lineacomprobante l WHERE l.id_comp = c.id_comp AND l.id_tcomp = c.id_tcomp), 0);
+       UPDATE comprobante c set importe = COALESCE( (SELECT SUM(importe * cantidad)
+                                                     FROM lineacomprobante l
+                                                     WHERE l.id_comp = c.id_comp
+                                                       AND l.id_tcomp = c.id_tcomp), 0);
 
 
 END; $$;
