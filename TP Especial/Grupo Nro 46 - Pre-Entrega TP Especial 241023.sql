@@ -8,20 +8,23 @@
 -- Restriccion de tipo de tupla ya que necesito varios valores de una fila
 
 ALTER TABLE Persona
-  ADD CONSTRAINT fecha_alta_baja_6m
-      CHECK ( ( activo = FALSE AND (fecha_baja is not null AND (DATE_PART('months', AGE(fecha_baja, fecha_alta)) >= 6 ) ) )
-               OR activo = TRUE );
+ADD CONSTRAINT fecha_alta_baja_6m
+CHECK ( ( activo = FALSE
+  AND (fecha_baja IS NOT NULL AND ( AGE(fecha_baja, fecha_alta) >= interval '6 months' ) ) )
+   OR activo = TRUE );
+
 
 
 --b. El importe de un comprobante debe coincidir con el total de los importes indicados en las líneas que lo conforman (si las tuviera).
 
 -- En las tablas Comprobante y LineaComprobante; atributos: id_comp, id_tcomp, importe;
 -- Restriccion General ya que usa 2 tablas
+
 -- Declarativa:
 -- CREATE ASSERTION comprobante_coincide_linea
 -- CHECK ( NOT EXISTS ( SELECT 1
 -- FROM Comprobante c
--- WHERE c.importe != (SELECT sum(l.importe)
+-- WHERE c.importe != (SELECT COALESCE( sum(l.importe * l.cantidad), 0)
 --                     FROM lineacomprobante l
 --                     WHERE c.id_comp = l.id_comp
 --                       AND c.id_tcomp = l.id_tcomp) ) )
@@ -36,7 +39,7 @@ RETURNS TRIGGER AS $$
     BEGIN
         IF ( EXISTS (SELECT 1
                      FROM comprobante c
-                     WHERE c.importe != (SELECT sum(l.importe * l.cantidad)
+                     WHERE c.importe != (SELECT COALESCE( sum(l.importe * l.cantidad) , 0)
                                          FROM lineacomprobante l
                                          WHERE c.id_comp = l.id_comp
                                            AND c.id_tcomp = l.id_tcomp)) ) THEN
@@ -63,8 +66,10 @@ CREATE OR REPLACE TRIGGER tr_importe_linea_comp
 
 -- c. Las IPs asignadas a los equipos no pueden ser compartidas entre diferentes clientes.
 
+-- Consideramos que los equipos no pueden tener la misma IP.
 -- En la tabla Equipo; atributos: IP, id_cliente;
 -- Restriccion de Tabla
+
 -- Declarativa:
 -- ALTER TABLE EQUIPO ADD CONSTRAINT ip_equipo
 -- CHECK (NOT EXISTS(SELECT 1
@@ -98,9 +103,7 @@ CREATE OR REPLACE TRIGGER tr_equipo_insert_update
 -- se deben generar e insertar los registros asociados a la/s factura/s correspondiente/s a los distintos clientes.
 -- Indicar si se deben proveer parámetros adicionales para su generación y, de ser así, cuáles.
 
--- No pudimos lograr que el numero de las lineas de comprobante se reinicie para cada comprobante
 
-------------------------------------- VERSION CON INSERTS MASIVOS -------------------------------------
 ---- SECUENCIA PARA COMPROBANTE ----
 CREATE SEQUENCE comprobanteSeq
 START WITH 1;
@@ -110,28 +113,21 @@ CREATE SEQUENCE lineaComprobanteSeq
 START WITH 1;
 
 ---- PROCEDIMIENTO ----
-CREATE OR REPLACE PROCEDURE pr_serv_period_insert()
+CREATE OR REPLACE PROCEDURE pr_serv_period_insert(comentario varchar(2048), estado varchar(20), dias_vencimiento int, lugar int,
+                                                  descripcion_linea varchar(80))
 LANGUAGE plpgsql
 AS $$
    BEGIN
        INSERT INTO comprobante (id_comp, id_tcomp, fecha, comentario, estado, fecha_vencimiento, id_turno, importe, id_cliente, id_lugar)
-        SELECT nextval('comprobanteSeq'), 1, current_date, '', 'pendiente', current_date + 15, 1 , 0, c.id_cliente, 1
+        SELECT nextval('comprobanteSeq'), 1, current_date, comentario, estado, current_date + dias_vencimiento, null, 0, c.id_cliente, lugar
         FROM cliente c
         WHERE c.id_cliente IN (SELECT p.id_persona
                                FROM persona p
                                WHERE p.activo = true);
 
-/*
+
         INSERT INTO lineacomprobante (nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
-        SELECT  nextval('lineaComprobanteSeq'), c.id_comp, 1, '', count(*), s.costo, s.id_servicio   /* no me gusta el asterisco */
-        FROM servicio s JOIN equipo e USING(id_servicio)
-                        JOIN comprobante c using(id_cliente)
-        WHERE c.fecha = current_date
-          AND s.periodico = true --Filtar los comprobantes del mes actual para no duplicar y que el servicio sea periodico
-        GROUP BY id_servicio, id_cliente, costo, id_comp;
-*/
-        INSERT INTO lineacomprobante (nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
-        SELECT ROW_NUMBER() OVER (PARTITION BY c.id_comp ORDER BY s.id_servicio) AS nro_linea, c.id_comp, 1, '', count(*), s.costo, s.id_servicio   /* no me gusta el asterisco */
+        SELECT  nextval('lineaComprobanteSeq'), c.id_comp, 1, descripcion_linea, count(*), s.costo, s.id_servicio   /* no me gusta el asterisco */
         FROM servicio s JOIN equipo e USING(id_servicio)
                         JOIN comprobante c using(id_cliente)
         WHERE c.fecha = current_date
@@ -148,53 +144,22 @@ AS $$
 END; $$;
 
 ---- LLAMADA AL PROCEDIMIENTO ----
-call pr_serv_period_insert();
+call pr_serv_period_insert('', 'Pendiente', 15, 1);
 
-------------------------------------- VERSION SECUENCIAL -------------------------------------
--- Esta fue la primera version que realizamos
+-- Decidimos pasar por parametro los valores comentario, estado, dias_vencimiento para sumar a la fecha actual, el id_lugar y la descripcion
+-- de la linea comprobante porque no es algo que sepamos realmente que va, entonces se deja libre a que quien ejecute la funcion
+-- lo pueda disponer como sugiera. Ademas pusimos el id_turno en null porque estamos armando una factura y eso
+-- corresponde a otro tipo de comprobantes.
 
----- SECUENCIA PARA COMPROBANTE ----
-CREATE SEQUENCE id_comp START WITH 1;
-
----- PROCEDIMIENTO ----
-CREATE OR REPLACE PROCEDURE pr_serv_period()
-LANGUAGE plpgsql
-AS $$
-DECLARE
-   var_r record;
-BEGIN
-   for var_r in (
-       select s.id_servicio, e.id_cliente, s.costo
-       from servicio s JOIN equipo e USING (id_servicio)
-       where s.periodico = true AND s.activo = true
-   ) loop
-       IF (NOT EXISTS( SELECT 1
-                       FROM comprobante c
-                       WHERE var_r.id_cliente = c.id_cliente
-                       AND extract(month from c.fecha) = extract(month from current_timestamp) ) ) THEN
-       -- Hay que comprobar que el comprobante no sea de la misma fecha?
-           INSERT INTO comprobante
-           values ((select nextval('id_comp')), 1, current_timestamp, '-', null, current_timestamp + '15 days', null, '0', var_r.id_cliente, null);
-       end if;
-
-       --INSERT INTO lineacomprobante(nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
-       --VALUES ((select count(*) from lineacomprobante where (id_comp) ) +1, );
-
-       INSERT INTO lineacomprobante(nro_linea, id_comp, id_tcomp, descripcion, cantidad, importe, id_servicio)
-       VALUES ((select nextval('id_comp')), (SELECT DISTINCT c.id_comp FROM comprobante c WHERE id_cliente = var_r.id_cliente and extract(month from c.fecha) = extract(month from current_timestamp)),
-                  1,'',1,var_r.costo,var_r.id_servicio);
-
-       -- Nro linea autogenerado? Contador que empiece en 1 o 0 y despues vuelve a 0 para otros comprobantes?
-       -- Si no compruebo la fecha habria un solo comprobante que se va llenando y no nos dejaria volver a poner en la linea 1 y asi
-       -- Poniendo la fecha, cada mes haria un comprobante nuevo?
-
-   end loop;
-END; $$;
-
----- LLAMADA AL PROCEDIMIENTO ----
-call pr_serv_period();
+-- Funcionamiento: primero se hace un insert de todos los comprobantes, uno por cada cliente activo.
+--  Luego se insertan las lineas correspondientes a los comprobantes, se hace un JOIN entre servicio con equipo por el id_servicio y luego con comprobante
+--  conectando por el id_cliente, y filtrando que el comprobante sea de la fecha actual, osea la misma que los comprobantes que insertamos antes,
+--  y tambien filtrando que los servicios sean periodicos. Agrupamos por servicio y cliente principalmente porque si un cliente cuenta con el mismo
+--  servicio mas de una vez hay que reflejarlo en la cantidad.
+--  Finalmente se hace un update en comprobante con el valor de importe, el cual es la suma del importe de las lineas por la cantidad.
 
 
+------
 -- b. Al ser invocado entre dos fechas cualesquiera genere un informe de los empleados (personal)
 -- junto con la cantidad de clientes distintos que cada uno ha atendido en tal periodo
 -- y los tiempos promedio y máximo del conjunto de turnos atendidos en el periodo.
@@ -202,32 +167,28 @@ call pr_serv_period();
 ---- FUNCION ----
 CREATE OR REPLACE FUNCTION pr_informe_empleados(fecha_inicio TIMESTAMP, fecha_fin TIMESTAMP )
    RETURNS TABLE(
-       id_personal integer,
-       cant_clientes bigint,
-       tiempo_promedio interval,
-       tiempo_max interval
+                    id_personal integer,
+                    cant_clientes bigint,
+                    tiempo_promedio interval,
+                    tiempo_max interval
                 )
    LANGUAGE 'plpgsql' as $$
-   BEGIN
-       return query
-               SELECT p.id_personal, (SELECT COUNT(DISTINCT id_cliente)
-                                      FROM Turno t JOIN Comprobante c using(id_turno)
-                                      WHERE t.id_personal = p.id_personal
-                                        AND t.desde BETWEEN fecha_inicio AND fecha_fin),
-                                     (SELECT AVG(t.hasta - t.desde)
-                                      FROM Turno t JOIN Comprobante c using(id_turno)
-                                      WHERE t.id_personal = p.id_personal
-                                        AND t.desde BETWEEN fecha_inicio AND fecha_fin),
-                                     (SELECT MAX((t.hasta - t.desde))
-                                      FROM Turno t JOIN Comprobante c using(id_turno)
-                                      WHERE t.id_personal = p.id_personal
-                                        AND t.desde BETWEEN fecha_inicio AND fecha_fin)
-               FROM personal p;
-   END;
+BEGIN
+   return query
+       SELECT t.id_personal, COUNT(DISTINCT id_cliente), AVG(t.hasta - t.desde), MAX(t.hasta - t.desde)
+       FROM turno t JOIN comprobante c USING(id_turno)
+       WHERE t.desde >= fecha_inicio AND t.hasta <= fecha_fin
+       GROUP BY t.id_personal;
+END;
 $$;
+
 
 ---- PRUEBA ----
 SELECT * FROM pr_informe_empleados('1900-10-1', current_date);
+
+-- Funcionamiento: la funcion retorna un tabla que en cada columna lleva la informacion solicitada del informe. Se hace un JOIN
+--  entre turno y comprobante para buscar al personal que ha atendido a alguien, luego se filtra en el periodo que se solicita
+--  y agrupamos por id_personal para contar cada cliente.
 
 ----------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -239,18 +200,59 @@ SELECT * FROM pr_informe_empleados('1900-10-1', current_date);
 
 ---- VISTA 1 ----
 CREATE OR REPLACE VIEW vista1 AS
-   SELECT c.id_cliente, c.saldo
-   FROM cliente c
-   WHERE c.id_cliente in (SELECT id_persona
-                          FROM persona p JOIN direccion d using(id_persona)
-                                         JOIN barrio b using (id_barrio)
-                                         JOIN ciudad c using (id_ciudad)
-                          WHERE c.nombre = 'Napoli' and extract(year from age(fecha_nacimiento)) < 30)
+SELECT c.id_cliente, c.saldo
+FROM cliente c
+WHERE c.id_cliente IN (SELECT id_persona
+                       FROM persona p JOIN direccion d using(id_persona)
+                                      JOIN barrio b using (id_barrio)
+                                      JOIN ciudad c using (id_ciudad)
+                       WHERE c.nombre = 'Napoli'
+                        AND extract(year from age(fecha_nacimiento)) < 30 )
+ AND c.id_cliente IN (SELECT e.id_cliente
+                      FROM equipo e
+                      GROUP BY (e.id_cliente)
+                      HAVING count(id_servicio) > 3);
 
-     AND c.id_cliente in (SELECT e.id_cliente
-                          FROM equipo e JOIN servicio s using (id_servicio)
-                          GROUP BY (e.id_cliente)
-                          HAVING count(id_servicio) > 3);
+------------------- Planteamos una sentencia que tenga distinto comportamiento si la vista tiene o no WCO -------------------
+
+-- Creamos una persona menor de 30 años
+INSERT INTO persona (id_persona, tipo, tipodoc, nrodoc, nombre, apellido, fecha_nacimiento, fecha_alta, fecha_baja, cuit, activo, mail, telef_area, telef_numero)
+VALUES (801,'Cliente','DNI',12345678,'Juan','Perez','1999-01-01','2010-01-01',NULL,NULL,true,'',null,null);
+-- Creamos la ciudad Napoli y generamos una direccion
+INSERT INTO ciudad (id_ciudad,nombre) VALUES (801,'New York');
+INSERT INTO barrio (id_barrio,nombre,id_ciudad) VALUES (801,'Barrio1',801);
+-- Creamos una direccion para la persona creada
+INSERT INTO direccion (id_direccion,calle,numero,id_barrio,id_persona) VALUES (801,'Calle1',801,801,801);
+
+
+-- Si la vista no tiene WCO podemos insertar en ella una tupla que no se mostraria en ella debido a sus condiciones
+-- (que tenga menos de 30 años y mas de 3 servicios, que viva en Napoli).
+INSERT INTO vista1 (id_cliente,saldo) VALUES (801,1000);
+-- Si miramos en la vista no se muestra la tupla insertada
+SELECT * FROM vista1 WHERE id_cliente = 801;
+-- Si miramos en la tabla base si se inserto la tupla
+SELECT * FROM cliente WHERE id_cliente = 801;
+-- Ahora si creamos la vista con WCO y veremos que la tupla no se insertara en ningun lado ya que WCO previene la migracion tuplas
+-- que no cumplen con las condiciones de la vista
+
+CREATE OR REPLACE VIEW vista1_WCO AS
+SELECT c.id_cliente, c.saldo
+FROM cliente c
+WHERE c.id_cliente in (SELECT id_persona FROM persona p JOIN direccion d using(id_persona)
+                                                       JOIN barrio b using (id_barrio)
+                                                       JOIN ciudad c using (id_ciudad)
+                      WHERE c.nombre = 'Napoli' and extract(year from age(fecha_nacimiento)) < 30)
+ and c.id_cliente IN (SELECT e.id_cliente FROM equipo e GROUP BY (e.id_cliente) HAVING count(id_servicio) > 3)
+WITH CHECK OPTION;
+
+
+-- Borramos la tupla insertada antes
+DELETE FROM cliente WHERE id_cliente = 801;
+-- Insertamos la tupla en la vista con WCO
+INSERT INTO vista1_WCO (id_cliente,saldo) VALUES (801,1000);
+-- Y nos tira error ya que la tupla no cumple con las condiciones de la vista
+
+
 
 
 ----
@@ -261,81 +263,39 @@ CREATE OR REPLACE VIEW vista1 AS
 
 ---- VISTA 2 ----
 CREATE OR REPLACE VIEW vista2 AS
-SELECT p.id_persona, p.tipo, p.tipodoc, p.nrodoc, p.nombre AS persona_nombre,
-       p.apellido, p.fecha_nacimiento, p.fecha_alta, p.fecha_baja, p.CUIT, p.activo as persona_activo,
-       p.mail, p.telef_area, p.telef_numero,s.id_servicio, s.nombre AS servicio_nombre,
-       s.periodico,s.costo,s.intervalo,s.tipo_intervalo,s.activo as servicio_activo,s.id_cat
+SELECT p.id_persona, p.tipo, p.tipodoc, p.nrodoc, p.nombre, p.apellido, p.fecha_nacimiento, p.fecha_alta, p.fecha_baja, p.CUIT,
+       p.activo, p.mail, p.telef_area, p.telef_numero,s.id_servicio, s.nombre AS servicio_nombre, s.costo
 FROM persona p JOIN equipo e ON (id_persona = id_cliente)
                JOIN servicio s USING (id_servicio)
 WHERE p.id_persona IN (SELECT c.id_cliente
                        FROM cliente c )
- AND p.activo = true
- AND extract(year from p.fecha_alta) = extract(year from current_timestamp)
- AND s.activo = true;
+  AND p.activo = true
+  AND extract(year from p.fecha_alta) = extract(year from current_timestamp)
+  AND s.activo = true;
 
 
----- TRIGGER UPDATE ----
--- Podemos actualizar en personas sus datos
--- Podemos actualizar en servicio sus datos
-----> Podemos hacer una verificacion de si existe un equipo con el cliente.
-CREATE OR REPLACE FUNCTION trigger_update_vista2()
-   RETURNS TRIGGER AS $$
-BEGIN
-   UPDATE persona
-   SET tipo = NEW.tipo,
-       tipodoc = NEW.tipodoc,
-       nrodoc = NEW.nrodoc,
-       nombre = NEW.persona_nombre,
-       apellido = NEW.apellido,
-       fecha_nacimiento = NEW.fecha_nacimiento,
-       fecha_alta = NEW.fecha_alta,
-       fecha_baja = NEW.fecha_baja,
-       CUIT = NEW.CUIT,
-       activo = NEW.persona_activo,
-       mail = NEW.mail,
-       telef_area = NEW.telef_area,
-       telef_numero = NEW.telef_numero
-   WHERE id_persona = NEW.id_persona;
-   UPDATE servicio
-   SET nombre = NEW.servicio_nombre,
-       costo = NEW.costo,
-       periodico = NEW.periodico,
-       intervalo = NEW.intervalo,
-       tipo_intervalo = NEW.tipo_intervalo,
-       activo = NEW.servicio_activo,
-       id_cat = NEW.id_cat
-   WHERE id_servicio = NEW.id_servicio;
-   RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
----- TRIGGER PARA VISTA2 DE UPDATE ----
-CREATE TRIGGER trigger_update_vista2
-INSTEAD OF UPDATE
-ON vista2
-FOR EACH ROW EXECUTE FUNCTION trigger_update_vista2();
+-- TRIGGER INSERT
+-- No armamos un trigger insert ya que no nos parece correcto. A la vista le faltan datos para insertar en equipo. Como por ejemplo
+-- su mac, IP, nombre, datos que no pueden faltar.
+-- Esta falta de datos genera ambiguedad en la insercion de datos en la tabla equipo, por lo que no se puede insertar en la vista2.
 
 
----- TRIGGER INSERT ----
-   --Solo tenemos id de servicio, su nombre y su costo, nos faltaria saber si es periodico y su categoria, asi que no es una opcion crear un nuevo servicio.
-   --Igualmente aunque tuvieramos todos los datos del servicio, lo mas importante es que faltan datos para el equipo!, nombre del equipo y su mac. Ambiguo quizas, podriamos rellenar(alternativa)!
-   --Lo que esta en la vista es porque significa que el cliente tiene un equipo que utiliza ese sevicio
-CREATE OR REPLACE FUNCTION insert_vista2()
-   RETURNS trigger AS $$
-BEGIN
-   RAISE EXCEPTION 'No se permiten operaciones de insert sobre la vista';
-   RETURN null;
-END;
-$$ LANGUAGE plpgsql;
-
----- TRIGGER PARA VISTA2 DE INSERT ----
-CREATE TRIGGER trigger_insert_vista2
-   INSTEAD OF INSERT ON vista2
-   FOR EACH ROW EXECUTE FUNCTION insert_vista2();
+-- TRIGGER UPDATE
+-- En el caso del update tambien no consideramos permitirlo al igual que el insert. El update sobre la vista2 genera
+-- inconvenientes cuando cambiamos alguna de las pks de la vista, es decir, id_persona o id_servicio.
+-- id_persona es utilizada como fk en equipo y cliente, e id_servicio es utilizada como fk en equipo. En el script de creacion
+-- de la base de datos no se contemplan las actualizaciones de las fk, y por defecto no se actualizan (esta en ON UPDATE NO ACTION por default),
+-- lo que imposibilita la actualizacion de las claves foraneas en las tablas equipo y cliente, por lo que no se puede actualizar la vista2.
+-- Podriamos tranquilamente permitir la actualización de los campos que no son pk, pero no esta bien dejar actualizar solo una parte de la vista.
+-- Una solucion a este problema seria alterar las tablas del esquema que dependan de las claves de la vista y agregarles que ON UPDATE CASCADE, pero
+-- no quisimos hacerlo ya que esto no forma parte de la consigna y no queremos modificar el script de creacion original.
 
 
----- TRIGGER DELETE ----
-   --Considero en solo borrar el equipo/s con la id de cliente y id de servicio de la fila borrada.
+-- TRIGGER DELETE
+-- Consideramos en solo borrar el equipo/s con la id de cliente y id de servicio de la fila borrada. No nos parece bien borrar
+-- una fila en persona ni menos en servicio, ya que el servicio puede estar siendo utilizado por otro cliente. Y la persona puede tener otros equipos.
+-- Lo que nos parece mas adecuado es simplemente borrar la conexion que produce que ese servicio se muestre en la vista junto con el cliente, osea el equipo.
+
 CREATE OR REPLACE FUNCTION delete_vista2()
    RETURNS trigger AS $$
 BEGIN
@@ -346,67 +306,53 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
----- TRIGGER PARA VISTA2 DE DELETE ----
 CREATE OR REPLACE TRIGGER trigger_delete_vista2
    INSTEAD OF DELETE ON vista2
    FOR EACH ROW EXECUTE FUNCTION delete_vista2();
 
----- SECUENCIA PARA ASIGNAR VALOR A EQUIPO NUEVO ----
--- Empieza desde 1000 para que no se choque con los equipos que ya existen (los datos que pasaron)
-CREATE SEQUENCE id_equipo_seq
-   START WITH 1000;
 
+-------- PRUEBAS SOBRE LOS TRIGGERS INSTEAD OF Y SUS PROPAGACIONES --------
+-- La siguiente secuencia inserta en la vista 2. Se puede ver que NO inserta en persona, en servicio y en equipo ya que
+-- no se puede insertar en la vista2 debido a que no es automaticamente actualizable y las consideraciones tomadas anteriormente.
 
-
----- TRIGGER INSERT ALTERNATIVA RELLENANDO DATOS DE EQUIPO ----
---En esta alternativa se crea el servicio si no existe, la persona si no existe
---Tambien surge la necesidad de agregar al select de la vista el SALDO del cliente, no sabemos si es relevante
-CREATE OR REPLACE FUNCTION insert_vista2_alternativa()
-   RETURNS trigger AS $$
-BEGIN
-   IF(NOT EXISTS(SELECT id_persona FROM persona where id_persona = new.id_persona)) THEN
-       INSERT INTO persona VALUES (new.id_persona, new.tipo, new.tipodoc, new.nrodoc, new.persona_nombre, new.apellido, new.fecha_nacimiento, new.fecha_alta, new.fecha_baja, new.CUIT, new.persona_activo, new.mail, new.telef_area, new.telef_numero);
-   END IF;
-   --Desconocemos el saldo del cliente, por lo que no lo insertamos o insertamos 0
-   IF(NOT EXISTS(SELECT id_cliente FROM cliente where id_cliente = new.id_persona)) THEN
-       INSERT INTO cliente VALUES (new.id_persona,0);
-   END IF;
-   IF(NOT EXISTS(SELECT id_servicio FROM servicio where id_servicio = new.id_servicio)) THEN
-       INSERT INTO servicio VALUES (new.id_servicio, new.servicio_nombre,new.periodico, new.costo, new.intervalo, new.tipo_intervalo, new.servicio_activo, new.id_cat);
-   END IF;
-   --Insertamos un equipo, el nombre es default y la mac default(no esta bueno, pero no queda de otra)
-   INSERT INTO equipo VALUES (nextval('id_equipo_seq'), 'equipo nuevo', '00:00:00:00:00:00', null,null, new.id_servicio, new.id_persona,current_timestamp, null,null,null);
-   RETURN new;
-END;
-$$ LANGUAGE plpgsql;
-
----- TRIGGER PARA VISTA2 DE INSERT ALTERNATIVA ----
-CREATE TRIGGER trigger_insert_vista2_alternativa
-   INSTEAD OF INSERT ON vista2
-   FOR EACH ROW EXECUTE FUNCTION insert_vista2_alternativa();
-
-
---------PRUEBAS SOBRE LOS TRIGGERS INSTEAD OF Y SUS PROPAGACIONES--------
---La siguiente secuencia inserta en la vista 2. Se puede ver que inserta en persona, en servicio y en equipo los valores correspondientes en el caso de utilizar
---La alternativa, si no se utiliza la alternativa, no se inserta en equipo (tiraria error).
 INSERT INTO vista2
 VALUES (777, 'M', 'DNI', '12345678', 'Gian', 'Perez', '1980-01-01', current_timestamp, NULL, '20-12345678-9', true, '', 11, 12345678,
-       777, 'Servicio1', true, 100.00, 30, 'semana', true, 1);
+       777,  'Servicio777', 100.00);
 
 SELECT * FROM persona WHERE id_persona = 777;
 SELECT * FROM servicio WHERE id_servicio = 777;
 SELECT * FROM equipo WHERE id_cliente = 777 AND id_servicio = 777;
 
 
---La siguiente secuencia actualiza en la vista 2. Se puede ver que actualiza en persona y en servicio los valores correspondientes.
-UPDATE vista2 SET persona_nombre = 'Giancarlo', servicio_nombre = 'ServicioCambiado' WHERE id_persona = 777 AND id_servicio = 777;
+-- Hagamos ahora algun ejemplo que aparezca en la vista2
+INSERT INTO persona VALUES (777, 'M', 'DNI', '12345678', 'Gian', 'Perez', '1980-01-01', current_timestamp, NULL, '20-12345678-9', true, '', 11);
+INSERT INTO cliente VALUES (777,1000);
+INSERT INTO servicio VALUES (777,'Servicio777',true,100.00,30,'semana',true,1);
+INSERT INTO servicio VALUES (778,'Servicio778',true,200.00,30,'semana',true,1);
+INSERT INTO equipo VALUES (777,'equipo777','mac1','ip1','nombre1',777,777,current_timestamp);
+INSERT INTO equipo VALUES (778,'equipo778','mac2','ip2','nombre2',778,777,current_timestamp);
+
+
+-- Veamos si se muestra en la vista2
+SELECT * FROM vista2 WHERE id_persona = 777;
+-- Como vemos se muestra en la vista2 dos entradas correspondientes para la persona con id 777 ya que posee dos equipos activos con servicios activos.
+
+
+-- Probemos ahora con un update sobre la vista cambiando el nombre de la persona y el nombre del servicio, y sus ids.
+-- La siguiente secuencia actualiza en la vista 2. Se puede ver que NO actualiza en persona y en servicio los valores
+--  correspondientes debido a que no es actualizable y las consideraciones anteriores.
+
+UPDATE vista2 SET id_servicio=998,id_persona = 998 ,nombre = 'Giancarlo', servicio_nombre = 'ServicioCambiado' WHERE id_persona = 777 AND id_servicio = 777;
 SELECT * FROM persona WHERE id_persona = 777;
 SELECT * FROM servicio WHERE id_servicio = 777;
 
 
---La siguiente secuencia borra en la vista 2. Se puede ver que borra en equipo los valores correspondientes.
-DELETE FROM vista2 WHERE id_persona = 777 AND id_servicio = 777;
-SELECT * FROM equipo WHERE id_cliente = 777 AND id_servicio = 777;
+-- La siguiente secuencia borra en la vista 2. Se puede ver que borra en equipo los valores correspondientes.
+-- Esta accion si es posible y podemos ver como se borra el equipo y consecuentemente la entrada en la vista2.
+DELETE FROM vista2 WHERE id_persona = 777;
+SELECT * FROM equipo WHERE id_cliente = 777;
+SELECT * FROM vista2 WHERE id_persona = 777;
+
 
 
 ----
@@ -418,12 +364,13 @@ SELECT * FROM equipo WHERE id_cliente = 777 AND id_servicio = 777;
 -- y por lo tanto no se pueden hacer automaticamente actualizables.
 
 CREATE OR REPLACE VIEW vista3 AS
-SELECT s.*,extract(year from c.fecha), extract(month from c.fecha) ,SUM(l.importe)
+SELECT s.*, extract(year from c.fecha) AS anio, extract(month from c.fecha) as mes, SUM(l.importe * l.cantidad) as monto_facturado
 FROM servicio s JOIN lineacomprobante l using(id_servicio)
-                JOIN comprobante c using (id_comp,id_tcomp)
+               JOIN comprobante c using (id_comp,id_tcomp)
 WHERE s.periodico = true and extract(year from AGE(fecha)) < 5
-GROUP BY s.id_servicio, s.nombre, s.periodico, s.costo, s.intervalo, s.tipo_intervalo, s.activo, s.id_cat, extract(year from c.fecha),extract(month from c.fecha)
-ORDER BY(s.id_servicio, extract(year from c.fecha), extract(month from c.fecha),SUM(l.importe));
+GROUP BY s.id_servicio, s.nombre, s.periodico, s.costo, s.intervalo, s.tipo_intervalo, s.activo, s.id_cat, extract(year from c.fecha), extract(month from c.fecha)
+ORDER BY(s.id_servicio, extract(year from c.fecha), extract(month from c.fecha), SUM(l.importe* l.cantidad));
+
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------
 ---- NoSQL ----
