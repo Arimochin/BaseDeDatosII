@@ -11,9 +11,10 @@ ALTER TABLE Persona
 ADD CONSTRAINT fecha_alta_baja_6m
 CHECK ( ( activo = FALSE
   AND (fecha_baja IS NOT NULL AND ( AGE(fecha_baja, fecha_alta) >= interval '6 months' ) ) )
-   OR activo = TRUE );
+   OR ( activo = TRUE AND fecha_baja IS NULL ) );
 
-
+INSERT INTO persona values (781, 'P', 'DNI', '45295463', 'Agustin', 'Buralli', '2003-11-27', current_date, null, null, true, null, null, null);
+UPDATE persona set fecha_baja = '2024-12-09', activo = false  where id_persona = 781;
 
 --b. El importe de un comprobante debe coincidir con el total de los importes indicados en las líneas que lo conforman (si las tuviera).
 
@@ -58,10 +59,10 @@ CREATE OR REPLACE TRIGGER tr_importe_comprobante
 
 ---- TRIGGER EN LINEA COMPROBANTE ----
 CREATE OR REPLACE TRIGGER tr_importe_linea_comp
-    AFTER INSERT OR UPDATE of importe OR DELETE
-    ON lineacomprobante
-    FOR EACH STATEMENT
-    EXECUTE FUNCTION fn_tr_importe();
+   AFTER INSERT OR UPDATE of importe, id_comp, id_tcomp OR DELETE
+   ON lineacomprobante
+   FOR EACH STATEMENT
+EXECUTE FUNCTION fn_tr_importe();
 
 
 -- c. Las IPs asignadas a los equipos no pueden ser compartidas entre diferentes clientes.
@@ -95,7 +96,8 @@ $$ LANGUAGE 'plpgsql';
 CREATE OR REPLACE TRIGGER tr_equipo_insert_update
    BEFORE UPDATE OF IP, id_cliente OR INSERT
    ON Equipo
-   FOR EACH ROW EXECUTE FUNCTION fn_equipo_insert_update();
+   FOR EACH ROW
+   EXECUTE FUNCTION fn_equipo_insert_update();
 
 -----------------------------------------------------------------------------------------------------------------------------------------------
 -- 2.
@@ -132,6 +134,7 @@ AS $$
                         JOIN comprobante c using(id_cliente)
         WHERE c.fecha = current_date
           AND s.periodico = true --Filtar los comprobantes del mes actual para no duplicar y que el servicio sea periodico
+          AND s.activo = true
         GROUP BY id_servicio, id_cliente, costo, id_comp;
 
 
@@ -364,12 +367,14 @@ SELECT * FROM vista2 WHERE id_persona = 777;
 -- y por lo tanto no se pueden hacer automaticamente actualizables.
 
 CREATE OR REPLACE VIEW vista3 AS
-SELECT s.*, extract(year from c.fecha) AS anio, extract(month from c.fecha) as mes, SUM(l.importe * l.cantidad) as monto_facturado
+SELECT s.*,extract(year from c.fecha) AS anio, extract(month from c.fecha) as mes ,SUM(l.importe * l.cantidad) as monto_facturado
 FROM servicio s JOIN lineacomprobante l using(id_servicio)
-               JOIN comprobante c using (id_comp,id_tcomp)
-WHERE s.periodico = true and extract(year from AGE(fecha)) < 5
-GROUP BY s.id_servicio, s.nombre, s.periodico, s.costo, s.intervalo, s.tipo_intervalo, s.activo, s.id_cat, extract(year from c.fecha), extract(month from c.fecha)
-ORDER BY(s.id_servicio, extract(year from c.fecha), extract(month from c.fecha), SUM(l.importe* l.cantidad));
+                JOIN comprobante c using (id_comp,id_tcomp)
+WHERE s.periodico = true
+  AND extract(year from AGE(fecha)) < 5 and id_tcomp = 1 --Verificar que sea una factura lo que contamos
+GROUP BY s.id_servicio, s.nombre, s.periodico, s.costo, s.intervalo, s.tipo_intervalo, s.activo, s.id_cat,
+         extract(year from c.fecha), extract(month from c.fecha)
+ORDER BY (s.id_servicio, extract(year from c.fecha), extract(month from c.fecha), SUM(l.importe* l.cantidad));
 
 
 ----------------------------------------------------------------------------------------------------------------------------------------------------
@@ -381,7 +386,7 @@ ORDER BY(s.id_servicio, extract(year from c.fecha), extract(month from c.fecha),
 
  db.servicio.aggregate([
     { $group:
-     { _id: “$tipoIntervalo”,
+     { _id: "$tipoIntervalo",
  	   servicios: { $count: {} } }
       } ]);
 
