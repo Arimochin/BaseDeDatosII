@@ -294,7 +294,8 @@ WHERE p.id_persona IN (SELECT c.id_cliente
 -- TRIGGER DELETE
 -- Consideramos en solo borrar el equipo/s con la id de cliente y id de servicio de la fila borrada. No nos parece bien borrar
 -- una fila en persona ni menos en servicio, ya que el servicio puede estar siendo utilizado por otro cliente. Y la persona puede tener otros equipos.
--- Lo que nos parece mas adecuado es simplemente borrar la conexion que produce que ese servicio se muestre en la vista junto con el cliente, osea el equipo.
+-- Lo que nos parece mas adecuado es simplemente borrar la conexion que produce que ese servicio se muestre en la vista junto con el cliente,
+-- osea el equipo.
 
 CREATE OR REPLACE FUNCTION delete_vista2()
    RETURNS trigger AS $$
