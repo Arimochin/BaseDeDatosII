@@ -372,7 +372,7 @@ SELECT s.*,extract(year from c.fecha) AS anio, extract(month from c.fecha) as me
 FROM servicio s JOIN lineacomprobante l using(id_servicio)
                 JOIN comprobante c using (id_comp,id_tcomp)
 WHERE s.periodico = true
-  AND extract(year from AGE(fecha)) < 5 and id_tcomp = 1 --Verificar que sea una factura lo que contamos
+  AND extract(year from AGE(fecha)) < 5 and id_tcomp = 1 -- Verificar que sea una factura lo que contamos
 GROUP BY s.id_servicio, s.nombre, s.periodico, s.costo, s.intervalo, s.tipo_intervalo, s.activo, s.id_cat,
          extract(year from c.fecha), extract(month from c.fecha)
 ORDER BY (s.id_servicio, extract(year from c.fecha), extract(month from c.fecha), SUM(l.importe* l.cantidad));
