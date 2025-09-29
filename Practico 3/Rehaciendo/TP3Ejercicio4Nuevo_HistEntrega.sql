@@ -95,3 +95,29 @@ SELECT * FROM renglon_entrega_pel WHERE nro_entrega = 8051;
 
 SELECT * FROM entrega_pel WHERE nro_entrega = 8051;
 SELECT * FROM renglon_entrega_pel WHERE nro_entrega = 8051;
+
+--
+SELECT * FROM entrega_pel WHERE id_video = 3582;
+SELECT * FROM renglon_entrega_pel WHERE nro_entrega = 389;
+
+
+DELETE FROM his_entrega;
+DELETE FROM renglon_entrega_pel WHERE nro_entrega = 389;
+
+DELETE FROM entrega_pel WHERE id_video = 3582;
+
+INSERT INTO unc_213.entrega_pel (nro_entrega, fecha_entrega, id_video, id_distribuidor_pel) VALUES (389, '2010-04-22', 3582, 735);
+INSERT INTO unc_213.entrega_pel (nro_entrega, fecha_entrega, id_video, id_distribuidor_pel) VALUES (3890, '2005-04-03', 3582, 484);
+INSERT INTO unc_213.entrega_pel (nro_entrega, fecha_entrega, id_video, id_distribuidor_pel) VALUES (4268, '2010-01-15', 3582, 735);
+
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 1873, 15);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 3462, 7);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 9162, 2);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 13349, 5);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 13536, 8);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 16291, 9);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 16701, 15);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 23567, 10);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 26451, 5);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 26727, 2);
+INSERT INTO unc_213.renglon_entrega_pel (nro_entrega, codigo_pelicula, cantidad) VALUES (389, 30253, 12);
